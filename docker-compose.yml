@@ -1,0 +1,150 @@
+version : "3.8"
+
+services:
+  db:
+    image: mysql:8
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: symfony_docker
+      MYSQL_USER: symfony
+      MYSQL_PASSWORD: symfony
+    ports:
+      - "4306:3306"
+    volumes:
+      - ./docker/db/conf-file.cnf:/etc/mysql/conf.d/conf-file.cnf
+      - mysqldata:/var/lib/mysql
+      - ./logs/mysql:/var/log/mysql/
+
+  app:
+    build:
+      dockerfile: ./docker/php/Dockerfile
+      context: .
+    working_dir: /var/
+    depends_on:
+      - "db"
+    env_file:
+      - app/.env
+    volumes:
+      - ./app/:/var/www/html/
+      - ./logs/app:/var/log
+
+  nginx:
+    build:
+      dockerfile: ./docker/nginx/Dockerfile
+      context: .
+    depends_on:
+      - "app"
+    working_dir: /var/www/html
+    volumes:
+      - ./app:/var/www/html
+      - ./docker/nginx/templates/default.conf.template:/etc/nginx/templates/default.conf.template
+      - ./logs/nginx:/var/log/nginx
+    links:
+      - db
+    ports:
+      - "8080:80"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.10.0
+    ports:
+      - "9200:9200"
+    environment:
+      ES_JAVA_OPTS: "-Xmx256m -Xms256m"
+      ELASTIC_PASSWORD: changeme
+    volumes:
+      - ./docker/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml
+      - esdata:/usr/share/elasticsearch/data
+    networks:
+      - elk
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:7.9.3
+    volumes:
+      - ./docker/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml
+      - ./docker/logstash/pipeline/logstash.conf:/usr/share/logstash/pipeline/logstash.config
+    environment:
+      LS_JAVA_OPTS: "-Xmx256m -Xms256m"
+    networks:
+      - elk
+    depends_on:
+      - "elasticsearch"
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:7.10.0
+    volumes:
+      - ./docker/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml
+      - ./logs/nginx/:/var/log/nginx/
+      - ./logs/mysql/:/var/log/mysql/
+      - ./logs/app/:/var/log/app/
+      - /var/run/docker.sock:/var/run/docker.sock
+      - fbdata:/usr/share/filebeat/data/
+    networks:
+      - elk
+    depends_on:
+      - "elasticsearch"
+      - "nginx"
+      - "app"
+      - "logstash"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.10.0
+    ports:
+      - "5601:5601"
+    volumes:
+      - ./docker/kibana/config/kibana.yml:/usr/share/kibana/config/kibana.yml
+    networks:
+      - elk
+    depends_on:
+      - "elasticsearch"
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+
+  flexget:
+    image: cpoppema/docker-flexget
+    build:
+      dockerfile: Dockerfile
+      context: ./docker/flexget/
+    volumes:
+      - ./docker/flexget/.flexget:/root/.flexget
+    ports:
+      - "5050:5050"
+      
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    links:
+      - db:db
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - 8183:80
+
+  transmission:
+    image: ghcr.io/linuxserver/transmission
+    environment:
+      - TZ=Europe/Paris
+      - USER=user
+      - PASS=transmission
+    volumes:
+      - ./docker/transmission/config:/config
+      - ./data/transmission/downloads:/downloads
+      - ./data/transmission/watch:/watch
+    ports:
+      - "9091:9091"
+      - "51413:51413"
+      - 51413:51413/udp
+ 
+volumes:
+  mysqldata:
+    driver: local
+  esdata:
+    driver: local
+  fbdata:
+    driver: local
+
+networks:
+  elk:
+    driver: bridge
